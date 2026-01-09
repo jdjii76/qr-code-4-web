@@ -3,3 +3,4 @@ qrcode[pil]
 pillow
 opencv-python-headless
 numpy
+pandas
