@@ -133,6 +133,38 @@ def img_to_png_bytes(img: Image.Image) -> bytes:
     img.save(buf, format="PNG")
     return buf.getvalue()
 
+def hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    value = color.lstrip("#")
+    if len(value) == 3:
+        value = "".join(ch * 2 for ch in value)
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+def relative_luminance(rgb: Tuple[int, int, int]) -> float:
+    def channel_lum(channel: int) -> float:
+        srgb = channel / 255.0
+        if srgb <= 0.03928:
+            return srgb / 12.92
+        return ((srgb + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * channel_lum(r) + 0.7152 * channel_lum(g) + 0.0722 * channel_lum(b)
+
+def contrast_ratio(color_a: str, color_b: str) -> float:
+    lum_a = relative_luminance(hex_to_rgb(color_a))
+    lum_b = relative_luminance(hex_to_rgb(color_b))
+    lighter = max(lum_a, lum_b)
+    darker = min(lum_a, lum_b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+def render_contrast_guidance(foreground: str, background: str, label: str) -> None:
+    ratio = contrast_ratio(foreground, background)
+    st.caption(f"{label} contrast ratio: **{ratio:.2f}:1**")
+    if ratio < 4.5:
+        st.warning(
+            "Low contrast can make QR codes harder to scan. Aim for at least **4.5:1** contrast.",
+            icon="⚠️",
+        )
+
 def make_qr_svg_bytes(data: str, settings: QRSettings) -> bytes:
     qr = qrcode.QRCode(
         version=None,
@@ -196,72 +228,129 @@ with tab_gen:
         qr_type = st.selectbox(
             "Template",
             ["Text / URL", "Wi-Fi", "vCard", "Email", "SMS", "Geo (lat/lon)"],
-            index=0
+            index=0,
+            help="Pick the kind of information you want to encode."
         )
 
         payload = ""
 
         if qr_type == "Text / URL":
-            payload = st.text_area("QR Content", placeholder="https://example.com", height=120).strip()
+            payload = st.text_area(
+                "QR Content",
+                placeholder="https://example.com",
+                height=120,
+                help="Paste a URL or any text you want to encode.",
+            ).strip()
 
         elif qr_type == "Wi-Fi":
-            ssid = st.text_input("SSID")
-            security = st.selectbox("Security", ["WPA", "WEP", "None"], index=0)
-            password = st.text_input("Password", type="password" if security != "None" else "default")
-            hidden = st.checkbox("Hidden network", value=False)
+            ssid = st.text_input("SSID", help="The Wi-Fi network name.")
+            security = st.selectbox(
+                "Security",
+                ["WPA", "WEP", "None"],
+                index=0,
+                help="Choose the Wi-Fi security type.",
+            )
+            password = st.text_input(
+                "Password",
+                type="password" if security != "None" else "default",
+                help="Required for WPA/WEP networks.",
+            )
+            hidden = st.checkbox("Hidden network", value=False, help="Check if the SSID is hidden.")
             if ssid.strip():
                 payload = build_wifi_payload(ssid.strip(), password, security, hidden)
 
         elif qr_type == "vCard":
             c1, c2 = st.columns(2)
             with c1:
-                first = st.text_input("First name")
-                last = st.text_input("Last name")
-                org = st.text_input("Organization")
+                first = st.text_input("First name", help="Given name.")
+                last = st.text_input("Last name", help="Family name.")
+                org = st.text_input("Organization", help="Company or organization name.")
             with c2:
-                title = st.text_input("Title")
-                phone = st.text_input("Phone")
-                email = st.text_input("Email")
-            url = st.text_input("Website (optional)")
+                title = st.text_input("Title", help="Role or job title.")
+                phone = st.text_input("Phone", help="Mobile or main contact number.")
+                email = st.text_input("Email", help="Email address.")
+            url = st.text_input("Website (optional)", help="Include a website URL if needed.")
             if (first.strip() or last.strip() or phone.strip() or email.strip()):
                 payload = build_vcard_payload(first, last, org, title, phone, email, url)
 
         elif qr_type == "Email":
-            email = st.text_input("To")
-            subject = st.text_input("Subject")
-            body = st.text_area("Body", height=100)
+            email = st.text_input("To", help="Recipient email address.")
+            subject = st.text_input("Subject", help="Email subject line.")
+            body = st.text_area("Body", height=100, help="Email body content.")
             if email.strip():
                 payload = build_mailto_payload(email.strip(), subject, body)
 
         elif qr_type == "SMS":
-            phone = st.text_input("Phone number")
-            message = st.text_area("Message", height=100)
+            phone = st.text_input("Phone number", help="Include country code if needed.")
+            message = st.text_area("Message", height=100, help="SMS message content.")
             if phone.strip():
                 payload = build_sms_payload(phone.strip(), message)
 
         elif qr_type == "Geo (lat/lon)":
             c1, c2 = st.columns(2)
             with c1:
-                lat = st.number_input("Latitude", value=34.000000, format="%.6f")
+                lat = st.number_input(
+                    "Latitude",
+                    value=34.000000,
+                    format="%.6f",
+                    help="Use decimal degrees, e.g., 34.000000",
+                )
             with c2:
-                lon = st.number_input("Longitude", value=-84.000000, format="%.6f")
+                lon = st.number_input(
+                    "Longitude",
+                    value=-84.000000,
+                    format="%.6f",
+                    help="Use decimal degrees, e.g., -84.000000",
+                )
             payload = build_geo_payload(lat, lon)
 
         st.caption("Tip: For logos and dense data (vCard), use error correction **H** and a larger box size.")
 
     with right:
         st.subheader("2) Style & output")
-        fill = st.color_picker("QR color", "#000000")
-        back = st.color_picker("Background color", "#FFFFFF")
-        error_label = st.selectbox("Error correction", list(ERROR_LEVELS.keys()), index=3)
-        box_size = st.slider("Box size", 4, 20, 10)
-        border = st.slider("Border (quiet zone)", 1, 10, 4)
+        fill = st.color_picker("QR color", "#000000", help="Choose a dark foreground color.")
+        back = st.color_picker("Background color", "#FFFFFF", help="Choose a light background color.")
+        render_contrast_guidance(fill, back, "QR")
+        error_label = st.selectbox(
+            "Error correction",
+            list(ERROR_LEVELS.keys()),
+            index=3,
+            help="Higher levels improve scan reliability but reduce capacity.",
+        )
+        box_size = st.slider(
+            "Box size",
+            4,
+            20,
+            10,
+            help="Controls the size of each QR module (pixel).",
+        )
+        border = st.slider(
+            "Border (quiet zone)",
+            1,
+            10,
+            4,
+            help="Keep at least 4 modules for reliable scanning.",
+        )
 
-        add_logo_toggle = st.checkbox("Add center logo", value=False)
+        add_logo_toggle = st.checkbox(
+            "Add center logo",
+            value=False,
+            help="Logos can reduce scan reliability, use higher error correction.",
+        )
         logo_scale = st.slider("Logo size (% of QR width)", 10, 35, 22, disabled=not add_logo_toggle)
-        logo_file = st.file_uploader("Logo image (PNG/JPG)", type=["png", "jpg", "jpeg"], disabled=not add_logo_toggle)
+        logo_file = st.file_uploader(
+            "Logo image (PNG/JPG)",
+            type=["png", "jpg", "jpeg"],
+            disabled=not add_logo_toggle,
+            help="Transparent PNGs work best.",
+        )
 
-        output_format = st.radio("Download format", ["PNG", "SVG"], horizontal=True)
+        output_format = st.radio(
+            "Download format",
+            ["PNG", "SVG"],
+            horizontal=True,
+            help="SVG is vector-based and scales without blurring.",
+        )
 
         settings = QRSettings(
             fill_color=fill,
@@ -328,14 +417,21 @@ with tab_batch:
 
     colA, colB, colC = st.columns(3)
     with colA:
-        b_fill = st.color_picker("QR color", "#000000", key="b_fill")
+        b_fill = st.color_picker("QR color", "#000000", key="b_fill", help="Choose a dark foreground color.")
     with colB:
-        b_back = st.color_picker("Background", "#FFFFFF", key="b_back")
+        b_back = st.color_picker("Background", "#FFFFFF", key="b_back", help="Choose a light background color.")
     with colC:
-        b_error_label = st.selectbox("Error correction", list(ERROR_LEVELS.keys()), index=3, key="b_err")
+        b_error_label = st.selectbox(
+            "Error correction",
+            list(ERROR_LEVELS.keys()),
+            index=3,
+            key="b_err",
+            help="Higher levels improve scan reliability but reduce capacity.",
+        )
 
-    b_box = st.slider("Box size", 4, 20, 10, key="b_box")
-    b_border = st.slider("Border", 1, 10, 4, key="b_border")
+    render_contrast_guidance(b_fill, b_back, "Batch QR")
+    b_box = st.slider("Box size", 4, 20, 10, key="b_box", help="Controls module size.")
+    b_border = st.slider("Border", 1, 10, 4, key="b_border", help="Keep at least 4 modules.")
 
     batch_settings = QRSettings(
         fill_color=b_fill,
@@ -351,7 +447,13 @@ with tab_batch:
             if "data" not in df.columns:
                 st.error("CSV must include a `data` column.")
             else:
-                fmt = st.radio("Output", ["PNG", "SVG"], horizontal=True, key="b_fmt")
+                fmt = st.radio(
+                    "Output",
+                    ["PNG", "SVG"],
+                    horizontal=True,
+                    key="b_fmt",
+                    help="SVG is vector-based and scales without blurring.",
+                )
                 make_zip = st.button("Build ZIP", type="primary")
 
                 if make_zip:
